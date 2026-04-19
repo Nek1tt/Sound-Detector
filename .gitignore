@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# Данные (большие файлы — не в git)
+data/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.ogg
+
+# Результаты
+outputs/
+*.json
+
+# Веса моделей (скачиваются автоматически через EfficientAT)
+*.pt
+*.pth
+*.ckpt
+
+# EfficientAT клонируется через git clone
+third_party/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
