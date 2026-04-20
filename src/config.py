@@ -15,14 +15,14 @@ class ModelConfig:
     name: str = "mn10_as"
 
     # Аудио параметры (должны совпадать с тем, на чём обучалась модель)
-    sample_rate: int = 32000
+    sample_rate: int = 16000
     win_size: int = 800
     hop_size: int = 320
     n_fft: int = 1024
     n_mels: int = 128
 
     # 5 секунд × 32000 Hz = длина клипа в ESC-50
-    clip_samples: int = 32000 * 5
+    clip_samples: int = 16000 * 2
 
 
 @dataclass
@@ -55,19 +55,19 @@ class InferenceConfig:
 class DaemonConfig:
     """Параметры фонового режима (daemon / микрофон)."""
     # Длина окна анализа в секундах
-    window_seconds: float = 5.0
+    window_seconds: float = 2.0
 
     # Шаг скользящего окна в секундах
-    hop_seconds: float = 0.5
+    hop_seconds: float = 0.1
 
     # Порог уверенности для вывода алерта
     confidence_threshold: float = 0.3
 
     # Частота дискретизации микрофона (до ресемплинга до 32 kHz)
-    mic_sample_rate: int = 44100
+    mic_sample_rate: int = 48000 #44100
 
     # Размер чанка PyAudio/sounddevice в сэмплах
-    chunk_size: int = 1024
+    chunk_size: int = 2048
 
 
 @dataclass

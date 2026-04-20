@@ -217,6 +217,7 @@ class AudioDaemon:
             blocksize=cfg.chunk_size,
             device=device_index,
             callback=_cb,
+	    dtype='float32',
         ):
             while not self._stop_event.is_set():
                 self._stop_event.wait(timeout=cfg.hop_seconds)
