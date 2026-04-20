@@ -46,3 +46,9 @@ __pycache__/
 data/
 outputs/
 third_party/
+venv/
+__pycache__/
+*.pyc
+data/
+outputs/
+third_party/
