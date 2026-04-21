@@ -6,7 +6,7 @@ import os
 import shutil
 from fastapi import FastAPI, UploadFile, File
 from collections import deque
-events_queue = deque(maxlen=100)
+events_queue = deque(maxlen=10)
 # ИЗМЕНЕНИЕ: Импорты для работы реальной модели
 from src.config import AppConfig
 from src.model import AudioModel, get_device
@@ -43,7 +43,7 @@ def update_event_callback(result: dict):
             })
         with event_lock:
             latest_event = {"timestamp": current_time, "message": event_type}
-
+        print(list(events_queue))
         # Логгирование в консоль с метриками производительности
         print(f"ПЛАТА: [{current_time}]  Инференс: {result['elapsed_ms']:4.0f}мс | 🔊 {event_type:<30} {prob:.3f} ")
 
