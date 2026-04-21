@@ -12,17 +12,17 @@ class ModelConfig:
     """Параметры модели EfficientAT."""
     # Варианты: 'mn04_as', 'mn05_as', 'mn10_as', 'mn20_as', 'dymn10_as'
     # Для Raspberry Pi 4 → mn04_as или mn05_as
-    name: str = "mn10_as"
+    name: str = "mn04_as"
 
     # Аудио параметры (должны совпадать с тем, на чём обучалась модель)
-    sample_rate: int = 16000
+    sample_rate: int = 32000
     win_size: int = 800
     hop_size: int = 320
     n_fft: int = 1024
     n_mels: int = 128
 
     # 5 секунд × 32000 Hz = длина клипа в ESC-50
-    clip_samples: int = 16000 * 2
+    clip_samples: int = 32000 * 2
 
 
 @dataclass
@@ -55,10 +55,10 @@ class InferenceConfig:
 class DaemonConfig:
     """Параметры фонового режима (daemon / микрофон)."""
     # Длина окна анализа в секундах
-    window_seconds: float = 2.0
+    window_seconds: float = 1.0
 
     # Шаг скользящего окна в секундах
-    hop_seconds: float = 0.1
+    hop_seconds: float = 0.2
 
     # Порог уверенности для вывода алерта
     confidence_threshold: float = 0.3
@@ -67,7 +67,7 @@ class DaemonConfig:
     mic_sample_rate: int = 48000 #44100
 
     # Размер чанка PyAudio/sounddevice в сэмплах
-    chunk_size: int = 2048
+    chunk_size: int = 1024
 
 
 @dataclass
