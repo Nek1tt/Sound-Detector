@@ -7,12 +7,22 @@ EfficientAT Audio Classifier — CLI
   infer     — инференс одного аудио-файла
   daemon    — фоновый режим: анализ из файла (mock) или с микрофона (mic)
 
+Бэкенды (--backend):
+  pt      — PyTorch оригинал (по умолчанию, наиболее точный)
+  onnx    — ONNX Runtime (быстрее на CPU, нужен onnxruntime)
+  tflite  — TensorFlow Lite (минимальная память, нужен tensorflow)
+
 Примеры:
   python main.py evaluate --model mn10_as
   python main.py evaluate --model mn04_as --fold 1
+
   python main.py infer sounds/dog.wav --top-k 5
+  python main.py infer sounds/siren.mp3 --backend onnx
+  python main.py infer sounds/rain.wav --backend tflite --tflite-path exports/mn04_as.tflite
+
   python main.py daemon --mode mock --source sounds/test.wav --loop
-  python main.py daemon --mode mic --threshold 0.4
+  python main.py daemon --mode mock --source sounds/test.wav --backend onnx --loop
+  python main.py daemon --mode mic --threshold 0.4 --backend pt
 """
 import argparse
 import json
@@ -25,7 +35,19 @@ import torch
 from tqdm import tqdm
 
 from src.config import AppConfig
-from src.model import AudioModel, get_device, load_audio
+from src.model import load_model, AudioModel, get_device, load_audio
+
+
+# ── Хелпер: применить --backend / --onnx-path / --tflite-path к конфигу ──
+
+def _apply_backend_args(args, cfg: AppConfig) -> None:
+    """Переносит аргументы CLI, связанные с бэкендом, в cfg.model."""
+    if getattr(args, "backend", None):
+        cfg.model.backend = args.backend
+    if getattr(args, "onnx_path", None):
+        cfg.model.onnx_path = Path(args.onnx_path)
+    if getattr(args, "tflite_path", None):
+        cfg.model.tflite_path = Path(args.tflite_path)
 
 
 # ── evaluate ──────────────────────────────────────────────────────────────
@@ -40,7 +62,6 @@ def cmd_evaluate(args, cfg: AppConfig) -> None:
         per_class_accuracy_report,
     )
 
-    # CLI-аргументы перекрывают дефолты конфига
     if args.model:
         cfg.model.name = args.model
     if args.esc50_dir:
@@ -51,19 +72,28 @@ def cmd_evaluate(args, cfg: AppConfig) -> None:
         cfg.inference.device = args.device
     if args.threads:
         cfg.inference.num_threads = args.threads
+    _apply_backend_args(args, cfg)
 
     torch.set_num_threads(cfg.inference.num_threads)
 
     out_dir = cfg.paths.outputs_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Данные и модель
-    dataset  = ESC50Dataset(cfg.paths)
-    meta     = dataset.get_fold(args.fold)
-    device   = get_device(cfg.inference.device)
-    model    = AudioModel.load(cfg.model, cfg.paths, device)
+    dataset = ESC50Dataset(cfg.paths)
+    meta    = dataset.get_fold(args.fold)
+    device  = get_device(cfg.inference.device)
 
-    # ── Инференс по всем файлам ───────────────────────────────────────
+    # evaluate поддерживает только PyTorch (нужны эмбеддинги для linear probe)
+    if cfg.model.backend != "pt":
+        print(
+            f"[warn] evaluate поддерживает только backend=pt.\n"
+            f"       ONNX/TFLite не экспортируют фичи → linear probe недоступен.\n"
+            f"       Принудительно используем backend=pt."
+        )
+        cfg.model.backend = "pt"
+
+    model = load_model(cfg.model, cfg.paths, device)
+
     all_probs, all_features, all_labels, all_cats, all_folds = [], [], [], [], []
     errors = []
 
@@ -102,22 +132,16 @@ def cmd_evaluate(args, cfg: AppConfig) -> None:
     all_folds    = np.array(all_folds)
     all_cats     = np.array(all_cats)
 
-    # ── Метрики ───────────────────────────────────────────────────────
-    y_true_50, y_score_50 = dataset.build_score_matrix(
-        all_probs, all_cats, all_labels
-    )
+    y_true_50, y_score_50 = dataset.build_score_matrix(all_probs, all_cats, all_labels)
     zs = compute_zeroshot_metrics(y_true_50, y_score_50, dataset.categories)
     lp = compute_linear_probe_metrics(all_features, all_labels, all_folds)
 
     print_summary(cfg.model.name, n, str(device), model.n_params_m, zs, lp)
+    print(per_class_accuracy_report(zs))
 
-    # Текстовый отчёт по классам
-    report = per_class_accuracy_report(zs)
-    print(report)
-
-    # ── Сохранение результатов ────────────────────────────────────────
     results = {
         "model":   cfg.model.name,
+        "backend": cfg.model.backend,
         "device":  str(device),
         "n_files": n,
         "zeroshot": {
@@ -159,6 +183,7 @@ def cmd_infer(args, cfg: AppConfig) -> None:
         cfg.model.name = args.model
     if args.device:
         cfg.inference.device = args.device
+    _apply_backend_args(args, cfg)
 
     result = infer_single_file(
         filepath=args.file,
@@ -168,7 +193,9 @@ def cmd_infer(args, cfg: AppConfig) -> None:
         top_k=args.top_k,
     )
 
+    backend_label = cfg.model.backend.upper()
     print(f"\n[infer] Файл     : {result['file']}")
+    print(f"[infer] Бэкенд   : {backend_label}")
     print(f"[infer] Время    : {result['elapsed_ms']:.0f} мс")
     print(f"\nТоп-{args.top_k} предсказаний:")
     for i, (label, prob) in enumerate(result["top_predictions"], 1):
@@ -192,15 +219,18 @@ def cmd_daemon(args, cfg: AppConfig) -> None:
         cfg.daemon.window_seconds = args.window
     if args.hop is not None:
         cfg.daemon.hop_seconds = args.hop
+    _apply_backend_args(args, cfg)
 
     device = get_device(cfg.inference.device)
-    model  = AudioModel.load(cfg.model, cfg.paths, device)
+    model  = load_model(cfg.model, cfg.paths, device)
+
+    print(f"[daemon] Бэкенд: {cfg.model.backend.upper()}")
 
     def on_result(result):
-        ts  = time.strftime("%H:%M:%S", time.localtime(result["timestamp"]))
+        ts        = time.strftime("%H:%M:%S", time.localtime(result["timestamp"]))
         lbl, prob = result["top_predictions"][0]
-        above = result["above_threshold"]
-        alert = f"  ← АЛЕРТ ({len(above)} кл.)" if above else ""
+        above     = result["above_threshold"]
+        alert     = f"  ← АЛЕРТ ({len(above)} кл.)" if above else ""
         print(f"[{ts}] {result['elapsed_ms']:>5.0f}мс  {prob:.3f}  {lbl[:45]}{alert}")
 
     daemon = AudioDaemon(model, cfg.daemon, on_result)
@@ -228,6 +258,21 @@ def cmd_daemon(args, cfg: AppConfig) -> None:
 
 # ── Парсер ────────────────────────────────────────────────────────────────
 
+BACKEND_HELP = "Бэкенд инференса: pt (PyTorch) | onnx (ONNX Runtime) | tflite (TFLite)"
+ONNX_PATH_HELP = "Путь к .onnx файлу (авто: exports/<model>.onnx)"
+TFLITE_PATH_HELP = "Путь к .tflite файлу (авто: exports/<model>.tflite)"
+
+
+def _add_backend_args(parser: argparse.ArgumentParser) -> None:
+    """Добавляет общие аргументы бэкенда в подпарсер."""
+    parser.add_argument("--backend",      default=None, choices=["pt", "onnx", "tflite"],
+                        help=BACKEND_HELP)
+    parser.add_argument("--onnx-path",    default=None, dest="onnx_path",
+                        help=ONNX_PATH_HELP)
+    parser.add_argument("--tflite-path",  default=None, dest="tflite_path",
+                        help=TFLITE_PATH_HELP)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="EfficientAT Audio Classifier",
@@ -236,29 +281,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # evaluate
+    # ── evaluate ──────────────────────────────────────────────────────
     ev = sub.add_parser("evaluate", help="Оценка модели на ESC-50")
     ev.add_argument("--model",      default=None,
                     help="Имя модели: mn04_as / mn05_as / mn10_as / mn20_as / dymn10_as")
     ev.add_argument("--esc50-dir",  default=None, dest="esc50_dir",
-                    help="Путь к ESC-50-master/  (по умолч. data/ESC-50-master)")
+                    help="Путь к ESC-50-master/")
     ev.add_argument("--output-dir", default=None, dest="output_dir",
-                    help="Куда сохранять results.json  (по умолч. outputs/)")
+                    help="Куда сохранять results.json")
     ev.add_argument("--fold",       default=None, type=int,
-                    help="Тестировать только один fold 1–5 (по умолч. все)")
+                    help="Тестировать только один fold 1–5")
     ev.add_argument("--device",     default=None, help="auto / cpu / cuda")
     ev.add_argument("--threads",    default=None, type=int,
-                    help="Число потоков CPU (рекомендуется 4 для Pi 4)")
+                    help="Число потоков CPU")
+    _add_backend_args(ev)
 
-    # infer
+    # ── infer ─────────────────────────────────────────────────────────
     inf = sub.add_parser("infer", help="Инференс одного аудио-файла")
     inf.add_argument("file",            help="Путь к .wav / .mp3 / .flac файлу")
     inf.add_argument("--model",  default=None, help="Имя модели")
     inf.add_argument("--top-k",  default=10, type=int, dest="top_k",
-                     help="Кол-во топ-предсказаний  (по умолч. 10)")
+                     help="Кол-во топ-предсказаний (по умолч. 10)")
     inf.add_argument("--device", default=None, help="auto / cpu / cuda")
+    _add_backend_args(inf)
 
-    # daemon
+    # ── daemon ────────────────────────────────────────────────────────
     dm = sub.add_parser("daemon", help="Фоновый анализ: файл или микрофон")
     dm.add_argument("--mode",       default="mock", choices=["mock", "mic"],
                     help="mock — из файла, mic — с микрофона")
@@ -269,14 +316,14 @@ def build_parser() -> argparse.ArgumentParser:
     dm.add_argument("--model",      default=None, help="Имя модели")
     dm.add_argument("--device",     default=None, help="auto / cpu / cuda")
     dm.add_argument("--threshold",  default=None, type=float,
-                    help="Порог уверенности для АЛЕРТ (0–1, по умолч. 0.3)")
+                    help="Порог уверенности для АЛЕРТ (0–1)")
     dm.add_argument("--window",     default=None, type=float,
-                    help="Длина окна анализа в секундах (по умолч. 5.0)")
+                    help="Длина окна анализа в секундах")
     dm.add_argument("--hop",        default=None, type=float,
-                    help="Шаг окна в секундах (по умолч. 0.5)")
+                    help="Шаг окна в секундах")
     dm.add_argument("--mic-device", default=None, type=int, dest="mic_device",
-                    help="Индекс устройства ввода (узнать: python -c "
-                         "\"import sounddevice; print(sounddevice.query_devices())\")")
+                    help="Индекс устройства ввода")
+    _add_backend_args(dm)
 
     return parser
 
@@ -296,4 +343,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

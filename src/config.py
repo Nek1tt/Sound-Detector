@@ -4,7 +4,7 @@
 """
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal
 
 
 @dataclass
@@ -14,6 +14,16 @@ class ModelConfig:
     # Для Raspberry Pi 4 → mn04_as или mn05_as
     name: str = "mn04_as"
 
+    # Бэкенд инференса: 'pt' | 'onnx' | 'tflite'
+    # pt     — оригинальные веса PyTorch (наиболее точный, требует torch)
+    # onnx   — ONNX Runtime (быстрее на CPU, нужен onnxruntime)
+    # tflite — TFLite (минимальная память, нужен tensorflow)
+    backend: Literal["pt", "onnx", "tflite"] = "pt"
+
+    # Пути к сконвертированным моделям (None = авто-определение из exports/)
+    onnx_path: Optional[Path] = None
+    tflite_path: Optional[Path] = None
+
     # Аудио параметры (должны совпадать с тем, на чём обучалась модель)
     sample_rate: int = 32000
     win_size: int = 800
@@ -21,7 +31,7 @@ class ModelConfig:
     n_fft: int = 1024
     n_mels: int = 128
 
-    # 5 секунд × 32000 Hz = длина клипа в ESC-50
+    # 2 секунды × 32000 Hz = длина клипа
     clip_samples: int = 32000 * 2
 
 
@@ -36,6 +46,9 @@ class PathsConfig:
 
     # Клонированный EfficientAT — добавляется в sys.path
     efficientat_repo: Path = Path("third_party/EfficientAT")
+
+    # Папка с экспортированными моделями (onnx / tflite)
+    exports_dir: Path = Path("exports")
 
 
 @dataclass
@@ -64,7 +77,7 @@ class DaemonConfig:
     confidence_threshold: float = 0.3
 
     # Частота дискретизации микрофона (до ресемплинга до 32 kHz)
-    mic_sample_rate: int = 48000 #44100
+    mic_sample_rate: int = 48000
 
     # Размер чанка PyAudio/sounddevice в сэмплах
     chunk_size: int = 1024

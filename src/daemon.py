@@ -3,6 +3,9 @@
 
   1. infer_single_file()  — анализирует один .wav файл и возвращает результат
   2. AudioDaemon          — крутится в фоне, анализирует поток (mock-файл или микрофон)
+
+Препроцессинг (мел-спектрограмма) для ONNX и TFLite бэкендов выполняется
+внутри соответствующих классов через MelPreprocessor.
 """
 import os
 import queue
@@ -15,84 +18,60 @@ import numpy as np
 import torch
 from collections import deque
 
-# ОПТИМИЗАЦИЯ ДЛЯ RASPBERRY PI: Ограничиваем количество потоков, 
-# чтобы избежать перегрузки ARM-процессора переключением контекста
 os.environ["OMP_NUM_THREADS"] = "4"
 torch.set_num_threads(4)
 
 from src.config import DaemonConfig, ModelConfig, PathsConfig, InferenceConfig
-from src.model import AudioModel, get_device, load_audio
-import scipy.signal
+from src.model import load_model, AudioModel, get_device, load_audio
+
+
+# ── Маппинг AudioSet → кастомные классы ──────────────────────────────────
+
 CUSTOM_CLASSES = {
-    "Тишина": [
-        "Silence"
-    ],
+    "Тишина": ["Silence"],
     "Музыка": [
         "Music", "Musical instrument", "Singing", "Music of Latin America",
         "Pop music", "Rock music", "Electronic music", "Hip hop music",
-        "Classical music", "Jazz", "Ambient music"
+        "Classical music", "Jazz", "Ambient music",
     ],
-
-    "Собака": [
-        "Dog", "Bark", "Bow-wow", "Canidae, dogs, wolves"
-    ],
-
-    "Кошка": [
-        "Cat", "Meow", "Purr"
-    ],
-
-    "Стекло": [
-        "Glass", "Shatter", "Breaking", "Crash"
-    ],
-
-    "Птица": [
-        "Bird", "Chirp, tweet", "Caw", "Crow", "Bird vocalization, bird call, bird song"
-    ],
-
-    "Детский плач": [
-        "Baby cry, infant cry", "Crying, sobbing"
-    ],
-
-    "Сирена": [
+    "Собака":  ["Dog", "Bark", "Bow-wow", "Canidae, dogs, wolves"],
+    "Кошка":   ["Cat", "Meow", "Purr"],
+    "Стекло":  ["Glass", "Shatter", "Breaking", "Crash"],
+    "Птица":   ["Bird", "Chirp, tweet", "Caw", "Crow",
+                 "Bird vocalization, bird call, bird song"],
+    "Детский плач": ["Baby cry, infant cry", "Crying, sobbing"],
+    "Сирена":  [
         "Siren", "Emergency vehicle", "Fire alarm", "Civil defense siren",
-        "Ambulance (siren)", "Police car (siren)"
+        "Ambulance (siren)", "Police car (siren)",
     ],
-
-    "Жарка еды": [
-        "Frying (food)", "Sizzle"
-    ],
-
+    "Жарка еды": ["Frying (food)", "Sizzle"],
     "Речь": [
         "Speech", "Conversation", "Narration, monologue",
-        "Female speech, woman speaking", "Male speech, man speaking"
+        "Female speech, woman speaking", "Male speech, man speaking",
     ],
-
-    "Щелчок": [
-        "Finger snapping"
-    ],
-
-    "Хлопок": [
-        "Clapping", "Applause", "Hands"
-    ],
-
+    "Щелчок": ["Finger snapping"],
+    "Хлопок":  ["Clapping", "Applause", "Hands"],
     "Транспорт": [
         "Vehicle", "Car", "Truck", "Bus", "Motorcycle",
         "Train", "Rail transport", "Aircraft", "Helicopter",
-        "Traffic noise, roadway noise", "Engine"
+        "Traffic noise, roadway noise", "Engine",
     ],
 }
-# ── Режим 1: одиночный инференс ───────────────────────────────────────────
-def aggregate_probs(probs, labels):
-    result = {}
 
+
+def aggregate_probs(probs: np.ndarray, labels: list) -> dict:
+    """
+    Агрегирует вероятности 527 классов AudioSet в кастомные категории.
+    Возвращает {имя_класса: max_prob}.
+    """
+    result = {}
     for cls, class_labels in CUSTOM_CLASSES.items():
         indices = [i for i, l in enumerate(labels) if l in class_labels]
-        if indices:
-            result[cls] = float(np.max(probs[indices]))  # или sum
-        else:
-            result[cls] = 0.0
-
+        result[cls] = float(np.max(probs[indices])) if indices else 0.0
     return result
+
+
+# ── Режим 1: одиночный инференс ───────────────────────────────────────────
 
 def infer_single_file(
     filepath,
@@ -102,7 +81,7 @@ def infer_single_file(
     top_k: int = 10,
 ) -> dict:
     device = get_device(inf_cfg.device)
-    model  = AudioModel.load(model_cfg, paths_cfg, device)
+    model  = load_model(model_cfg, paths_cfg, device)   # фабрика — выбирает бэкенд
     labels = model.get_audioset_labels()
 
     t0 = time.time()
@@ -114,15 +93,9 @@ def infer_single_file(
     probs, features = model.infer_waveform(waveform)
     elapsed_ms = (time.time() - t0) * 1000
 
-   # top_idx = np.argsort(probs)[::-1][:top_k]
-   # top_predictions = [(labels[i], float(probs[i])) for i in top_idx]
-    agg = aggregate_probs(probs, self.labels)
+    agg = aggregate_probs(probs, labels)
+    top_predictions = sorted(agg.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
-    top_predictions = sorted(
-    agg.items(),
-    key=lambda x: x[1],
-    reverse=True
-    )
     return {
         "file":            str(filepath),
         "top_predictions": top_predictions,
@@ -137,7 +110,7 @@ def infer_single_file(
 class AudioDaemon:
     def __init__(
         self,
-        model: AudioModel,
+        model,                          # AudioModel | ONNXAudioModel | TFLiteAudioModel
         cfg: DaemonConfig,
         callback: Callable[[dict], None],
     ):
@@ -145,24 +118,15 @@ class AudioDaemon:
         self.cfg      = cfg
         self.callback = callback
         self.labels   = model.get_audioset_labels()
-        self.smooth_buffer = deque(maxlen=5)
-        
-        self.stable_frames = 2
-        self.spike_threshold = 0.05
-        self.ema_alpha = 0.3
-        self.current_label = None
-        self.stable_count = 0
-        self.ema = {}
-        # ИЗМЕНЕНИЕ: Очередь размером 1 для сброса старых кадров
-        self._queue      : queue.Queue = queue.Queue(maxsize=1)
+
+        self.ema: dict = {}
+        for cls in CUSTOM_CLASSES:
+            self.ema[cls] = 0.0
+
+        self._queue      : queue.Queue  = queue.Queue(maxsize=1)
         self._stop_event : threading.Event = threading.Event()
         self._threads    : list = []
-        
-        # ИЗМЕНЕНИЕ: Мьютекс для безопасного запуска/остановки
         self._state_lock : threading.Lock = threading.Lock()
-
-        for cls in self.labels:
-            self.ema[cls] = 0.0
 
     # ── Запуск ──────────────────────────────────────────────────────────
 
@@ -171,7 +135,6 @@ class AudioDaemon:
             if self._threads and any(t.is_alive() for t in self._threads):
                 print("[daemon] Предупреждение: Потоки уже запущены.")
                 return
-
             print(f"[daemon] Mock-режим: {source_file}  loop={loop}")
             self._stop_event.clear()
             t_prod = threading.Thread(
@@ -191,12 +154,10 @@ class AudioDaemon:
                 "Установите: pip install sounddevice\n"
                 "На Pi сначала: sudo apt install -y portaudio19-dev"
             )
-            
         with self._state_lock:
             if self._threads and any(t.is_alive() for t in self._threads):
                 print("[daemon] Предупреждение: Потоки уже запущены.")
                 return
-
             print(f"[daemon] Mic-режим: device={device_index if device_index is not None else 'default'}")
             self._stop_event.clear()
             t_prod = threading.Thread(
@@ -216,13 +177,12 @@ class AudioDaemon:
             self._threads.clear()
             print("[daemon] Остановлен")
 
-    # ── Внутренние методы ────────────────────────────────────────────────
+    # ── Producers ────────────────────────────────────────────────────────
 
     def _mock_producer(self, source_file, loop: bool) -> None:
-        cfg   = self.cfg
-        sr    = self.model.cfg.sample_rate
-        wf    = load_audio(source_file, sr=sr)
-
+        cfg         = self.cfg
+        sr          = self.model.cfg.sample_rate
+        wf          = load_audio(source_file, sr=sr)
         win_samples = int(cfg.window_seconds * sr)
         hop_samples = int(cfg.hop_seconds    * sr)
 
@@ -232,17 +192,7 @@ class AudioDaemon:
                 if self._stop_event.is_set():
                     return
                 chunk = wf[pos : pos + win_samples]
-                
-                # ИЗМЕНЕНИЕ: Неблокирующее добавление с вытеснением
-                try:
-                    self._queue.put(chunk.copy(), block=False)
-                except queue.Full:
-                    try:
-                        self._queue.get_nowait()
-                    except queue.Empty:
-                        pass
-                    self._queue.put(chunk.copy(), block=False)
-                    
+                self._enqueue(chunk.copy())
                 pos += hop_samples
                 self._stop_event.wait(timeout=cfg.hop_seconds)
             if not loop:
@@ -252,21 +202,17 @@ class AudioDaemon:
         import sounddevice as sd
         import scipy.signal
 
-        cfg    = self.cfg
-        target_sr   = self.model.cfg.sample_rate
-        win_samples = int(cfg.window_seconds * target_sr)
+        cfg             = self.cfg
+        target_sr       = self.model.cfg.sample_rate
+        win_samples     = int(cfg.window_seconds * target_sr)
         mic_hop_samples = int(cfg.hop_seconds * cfg.mic_sample_rate)
 
-        ring = np.zeros(win_samples, dtype=np.float32)
-        
-        # ИСПРАВЛЕНИЕ 1: Теперь это список не чисел, а массивов (чанков)
-        mic_buf_chunks: list = [] 
-        lock = threading.Lock()
+        ring           = np.zeros(win_samples, dtype=np.float32)
+        mic_buf_chunks : list = []
+        lock           = threading.Lock()
 
         def _cb(indata, frames, time_info, status):
             with lock:
-                # ИСПРАВЛЕНИЕ 2: Просто копируем готовый numpy-массив целиком. 
-                # Никаких .tolist() и .astype()! (Он и так float32 благодаря dtype='float32')
                 mic_buf_chunks.append(indata[:, 0].copy())
 
         with sd.InputStream(
@@ -275,56 +221,38 @@ class AudioDaemon:
             blocksize=cfg.chunk_size,
             device=device_index,
             callback=_cb,
-            dtype='float32',
+            dtype="float32",
         ):
             while not self._stop_event.is_set():
                 self._stop_event.wait(timeout=cfg.hop_seconds)
 
                 with lock:
-                    # Быстро считаем общую длину данных без их склеивания
-                    total_len = sum(len(chunk) for chunk in mic_buf_chunks)
+                    total_len = sum(len(c) for c in mic_buf_chunks)
                     if total_len < mic_hop_samples:
                         continue
-                    
-                    # ИСПРАВЛЕНИЕ 3: Мгновенно склеиваем чанки средствами С (numpy)
                     flat_buf = np.concatenate(mic_buf_chunks)
-                    
                     if len(flat_buf) > mic_hop_samples * 2:
                         flat_buf = flat_buf[-mic_hop_samples:]
-                        
-                    new_raw = flat_buf[:mic_hop_samples]
-                    
-                    # Сохраняем остаток как единственный элемент списка
+                    new_raw   = flat_buf[:mic_hop_samples]
                     remainder = flat_buf[mic_hop_samples:]
-                    mic_buf_chunks = [remainder] if len(remainder) > 0 else []
+                    mic_buf_chunks[:] = [remainder] if len(remainder) > 0 else []
 
-                # Быстрый ресемплинг через scipy
                 if cfg.mic_sample_rate != target_sr:
                     new_raw = scipy.signal.resample_poly(
-                        new_raw,
-                        up=target_sr,
-                        down=cfg.mic_sample_rate
+                        new_raw, up=target_sr, down=cfg.mic_sample_rate
                     ).astype(np.float32)
 
-                # Сдвигаем кольцевой буфер
-                shift = min(len(new_raw), win_samples)
-                ring  = np.roll(ring, -shift)
+                shift      = min(len(new_raw), win_samples)
+                ring       = np.roll(ring, -shift)
                 ring[-shift:] = new_raw[-shift:]
+                self._enqueue(ring.copy())
 
-                # Отправляем в очередь с вытеснением старых кадров
-                try:
-                    self._queue.put(ring.copy(), block=False)
-                except queue.Full:
-                    try:
-                        self._queue.get_nowait() 
-                    except queue.Empty:
-                        pass
-                    self._queue.put(ring.copy(), block=False)
+    # ── Consumer ─────────────────────────────────────────────────────────
 
     def _consumer(self) -> None:
-        SPIKE_CLASSES = {"Щелчок", "Хлопок", "Стекло"}
-        alpha = 0.3                     # коэффициент EMA
-        spike_threshold = 0.05          # порог для спайка
+        SPIKE_CLASSES   = {"Щелчок", "Хлопок", "Стекло"}
+        alpha           = 0.3
+        spike_threshold = 0.05
 
         while not self._stop_event.is_set():
             try:
@@ -336,46 +264,48 @@ class AudioDaemon:
             probs, features = self.model.infer_waveform(chunk)
             elapsed_ms = (time.time() - t0) * 1000
 
-            agg = aggregate_probs(probs, self.labels)   # русские классы
+            agg = aggregate_probs(probs, self.labels)
 
-        # 1. Проверяем спайки (мгновенная реакция)
+            # Проверяем спайки (мгновенная реакция на резкие звуки)
             spike_detected = False
-            spike_label = None
-            spike_prob = 0.0
+            spike_label, spike_prob = None, 0.0
             for cls in SPIKE_CLASSES:
                 p = agg.get(cls, 0.0)
                 if p > spike_threshold and p > spike_prob:
-                    spike_detected = True
-                    spike_label = cls
-                    spike_prob = p
+                    spike_detected, spike_label, spike_prob = True, cls, p
 
             if spike_detected:
-                label = spike_label
-                prob = spike_prob
+                label, prob = spike_label, spike_prob
             else:
-            # 2. Обновляем EMA для всех классов
+                # EMA сглаживание для стабильных классов
                 for cls, raw_prob in agg.items():
-                    old = self.ema.get(cls, 0.0)
-                    self.ema[cls] = alpha * raw_prob + (1 - alpha) * old
+                    self.ema[cls] = alpha * raw_prob + (1 - alpha) * self.ema.get(cls, 0.0)
+                label, prob = max(self.ema.items(), key=lambda x: x[1]) if self.ema else ("Тишина", 0.0)
 
-            # 3. Выбираем класс с максимальной EMA
-                if self.ema:
-                    label, prob = max(self.ema.items(), key=lambda x: x[1])
-                else:
-                    label, prob = "Тишина", 0.0
-
-            top_predictions = [(label, prob)]
-            above_threshold = [(lbl, p) for lbl, p in top_predictions if p >= self.cfg.confidence_threshold]
+            top_predictions  = [(label, prob)]
+            above_threshold  = [(lbl, p) for lbl, p in top_predictions
+                                if p >= self.cfg.confidence_threshold]
 
             self.callback({
-                "timestamp": time.time(),
+                "timestamp":       time.time(),
                 "top_predictions": top_predictions,
                 "above_threshold": above_threshold,
-                "features": features,
-                "elapsed_ms": elapsed_ms,
-                "queue_size": self._queue.qsize(),
+                "features":        features,
+                "elapsed_ms":      elapsed_ms,
+                "queue_size":      self._queue.qsize(),
             })
 
-        # Для отладки (можно убрать)
             print(f"[{time.strftime('%H:%M:%S')}] {label:10} {prob:.3f}  spike={spike_detected}")
 
+    # ── Вспомогательные ──────────────────────────────────────────────────
+
+    def _enqueue(self, chunk: np.ndarray) -> None:
+        """Добавляет чанк в очередь, вытесняя старый при переполнении."""
+        try:
+            self._queue.put(chunk, block=False)
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            self._queue.put(chunk, block=False)
