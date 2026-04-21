@@ -86,7 +86,7 @@ if __name__ == "__main__":
     cfg.model.name = "mn04_as"
 
     # Выбор бэкенда через переменную окружения
-    backend = os.environ.get("AUDIO_BACKEND", "pt").lower()
+    backend = os.environ.get("AUDIO_BACKEND", "onnx").lower()
     if backend not in ("pt", "onnx", "tflite"):
         print(f"[warn] Неизвестный AUDIO_BACKEND='{backend}', используем 'pt'")
         backend = "pt"

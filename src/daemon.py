@@ -54,7 +54,10 @@ CUSTOM_CLASSES = {
     "Транспорт": [
         "Vehicle", "Car", "Truck", "Bus", "Motorcycle",
         "Train", "Rail transport", "Aircraft", "Helicopter",
-        "Traffic noise, roadway noise", "Engine",
+        "Traffic noise, roadway noise",
+    ],
+    "Механизмы": [
+        "Engine", "Clock", "Tick", "Mechanisms", "Mechanical fan",
     ],
 }
 
