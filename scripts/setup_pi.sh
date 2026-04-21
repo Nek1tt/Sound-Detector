@@ -52,9 +52,8 @@ echo "[3/5] PyTorch (CPU)..."
 echo "  Может занять 10–20 минут на Pi 4/5..."
 
 install_torch() {
-    pip install torch==2.10.0 torchaudio==2.10.0 torchvision==0.25.0 \
-        --extra-index-url https://download.pytorch.org/whl/cpu \
-        --quiet 2>/dev/null
+    pip install torch torchaudio torchvision \
+        --extra-index-url https://download.pytorch.org/whl/cpu
 }
 
 install_torch_fallback() {
@@ -74,19 +73,19 @@ echo "  ✓ PyTorch $TORCH_VER"
 # ── 4. Остальные зависимости ─────────────────────────────────────────────
 echo ""
 echo "[4/5] Python-зависимости..."
-pip install \
-    "librosa==0.11.0" \
-    "soundfile==0.13.1" \
-    "numpy==2.0.2" \
-    "pandas==2.2.2" \
-    "scikit-learn==1.6.1" \
-    "scipy==1.16.3" \
-    "matplotlib==3.10.0" \
-    "umap-learn==0.5.12" \
-    "pacmap==0.9.1" \
-    "faiss-cpu==1.13.2" \
-    "tqdm==4.67.3" \
-    --quiet
+pip install --only-binary=:all: \
+    numpy==2.1.2 \
+    scipy==1.16.3 \
+    pandas==2.2.3 \
+    scikit-learn==1.6.1 \
+    matplotlib==3.10.0 \
+    librosa==0.11.0 \
+    soundfile==0.13.1 \
+    umap-learn==0.5.12 \
+    pacmap==0.9.1 \
+    tqdm==4.67.3 \
+    faiss-cpu==1.13.2
+
 echo "  ✓ Зависимости установлены"
 
 # Sounddevice (опционально — нужен для daemon --mode mic)
@@ -103,7 +102,7 @@ fi
 # ── 5. EfficientAT ───────────────────────────────────────────────────────
 echo ""
 echo "[5/5] EfficientAT..."
-if[ ! -d "third_party/EfficientAT" ]; then
+if [ ! -d "third_party/EfficientAT" ]; then
     git clone --depth=1 https://github.com/fschmid56/EfficientAT.git \
         third_party/EfficientAT
     echo "  ✓ EfficientAT клонирован"

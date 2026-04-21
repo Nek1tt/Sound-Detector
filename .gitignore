@@ -40,3 +40,15 @@ third_party/
 # OS
 .DS_Store
 Thumbs.db
+venv/
+__pycache__/
+*.pyc
+data/
+outputs/
+third_party/
+venv/
+__pycache__/
+*.pyc
+data/
+outputs/
+third_party/

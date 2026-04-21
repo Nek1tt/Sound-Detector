@@ -6,82 +6,70 @@ import os
 import shutil
 from fastapi import FastAPI, UploadFile, File
 
-# Импорты из вашей ML-части
+from collections import deque
+events_queue = deque(maxlen=10)
+# ИЗМЕНЕНИЕ: Импорты для работы реальной модели
+
 from src.config import AppConfig
 from src.model import AudioModel, get_device
 from src.daemon import AudioDaemon
 
 app = FastAPI()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CUSTOM_SOUNDS_DIR = os.path.join(BASE_DIR, "custom_sounds")
-os.makedirs(CUSTOM_SOUNDS_DIR, exist_ok=True)
 
-# Глобальные переменные
+# Глобальная переменная для хранения последнего события с платы
 latest_event = {"timestamp": "--:--:--", "message": "Система инициализирована"}
-daemon = None  # Ссылка на запущенный демон
 
+# ИЗМЕНЕНИЕ: Блокировка для безопасного доступа к latest_event из разных потоков
+event_lock = threading.Lock()
 
-def on_audio_event(result: dict):
-    """Callback-функция, которая вызывается демоном при анализе каждого окна"""
+def update_event_callback(result: dict):
+    """
+    Коллбек, который вызывает AudioDaemon после каждого инференса.
+    """
     global latest_event
-
-    # Берем только те, что превысили порог confidence_threshold
-    above = result.get("above_threshold", [])
-
-    if above:
-        # Берем самый вероятный звук (включая кастомный, если он сработал)
-        top_label, prob = above[0]
+     
+    if result["top_predictions"]:
+        event_type = result["top_predictions"][0][0]
+        prob = result["top_predictions"][0][1]
+        #second_event_type = result["top_predictions"][1][0]
+        #second_prob = result["top_predictions"][1][1]
+        
         current_time = datetime.datetime.now().strftime("%H:%M:%S")
-
-        # Лог в консоль сервера
-        print(f"АУДИО: [{current_time}] {top_label} (Уверенность: {prob:.2f})")
-
-        latest_event = {"timestamp": current_time, "message": top_label}
-
-
-def start_ml_daemon():
-    """Инициализация и запуск реальной модели"""
-    global daemon
-    print("Загрузка модели...")
-    cfg = AppConfig()
-    device = get_device("auto")
-    model = AudioModel.load(cfg.model, cfg.paths, device)
-
-    daemon = AudioDaemon(model, cfg.daemon, on_audio_event)
-
-    # Загружаем уже существующие кастомные звуки из папки при старте
-    for f in os.listdir(CUSTOM_SOUNDS_DIR):
-        if f.endswith(".ogg"):
-            name = f.replace(".ogg", "")
-            daemon.load_custom_sound(name, os.path.join(CUSTOM_SOUNDS_DIR, f))
-
-    # Запуск микрофона (потребуется sounddevice на сервере/Raspberry)
-    daemon.start_mic()
-    # Если микрофона нет и вы тестируете файлом:
-    # daemon.start_mock("data/test.wav", loop=True)
+        
+        # Обновляем состояние для API потокобезопасно
+        with event_lock:
+            events_queue.append({
+                "timestamp": current_time,
+                "message": event_type
+            })
+        with event_lock:
+            latest_event = {"timestamp": current_time, "message": event_type}
+        print(list(events_queue))
+        # Логгирование в консоль с метриками производительности
+        print(f"ПЛАТА: [{current_time}]  Инференс: {result['elapsed_ms']:4.0f}мс | 🔊 {event_type:<30} {prob:.3f} ")
 
 
+# --- ЭНДПОИНТЫ API ---
 @app.get("/logs")
 async def get_logs():
-    return {"events": [latest_event]}  # Обернул в events список, как ожидает ваш бот
-
+    with event_lock:
+        events = list(events_queue)
+    return {"events": events}
 
 @app.post("/add_sound")
 async def add_sound(file: UploadFile = File(...), name: str = "custom"):
     try:
         clean_name = "".join(x for x in name if x.isalnum() or x in "._- ")
         file_name = f"{clean_name}.ogg"
-        file_path = os.path.join(CUSTOM_SOUNDS_DIR, file_name)
+
+        file_path = os.path.join(BASE_DIR, file_name)
+
 
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
         print(f"✅ Файл сохранен: {file_name}")
-
-        # Сразу передаем новый файл в модель для расчета эмбеддинга
-        if daemon:
-            daemon.load_custom_sound(clean_name, file_path)
-
         return {"status": "success", "filename": file_name}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -89,10 +77,24 @@ async def add_sound(file: UploadFile = File(...), name: str = "custom"):
 
 @app.get("/")
 async def root():
-    return {"status": "ML Board & API Active"}
+    return {"status": "Board & API Active"}
 
 
 if __name__ == "__main__":
-    # Запуск ML демона в отдельном потоке
-    threading.Thread(target=start_ml_daemon, daemon=True).start()
+    # Инициализация конфигурации
+    cfg = AppConfig()
+    
+    # ПРИНУДИТЕЛЬНО ставим легкую модель для Raspberry Pi
+    cfg.model.name = "mn04_as" 
+    
+    # Инициализация модели
+    print("[system] Загрузка модели...")
+    device = get_device("cpu") # На Pi гарантированно CPU
+    model = AudioModel.load(cfg.model, cfg.paths, device)
+    
+    # Инициализация и запуск демона
+    daemon = AudioDaemon(model, cfg.daemon, update_event_callback)
+    daemon.start_mic()
+    
+    # Запуск сервера
     uvicorn.run(app, host="0.0.0.0", port=8085)
