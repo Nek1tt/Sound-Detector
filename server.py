@@ -5,9 +5,11 @@ import datetime
 import os
 import shutil
 from fastapi import FastAPI, UploadFile, File
+
 from collections import deque
 events_queue = deque(maxlen=10)
 # ИЗМЕНЕНИЕ: Импорты для работы реальной модели
+
 from src.config import AppConfig
 from src.model import AudioModel, get_device
 from src.daemon import AudioDaemon
@@ -60,7 +62,9 @@ async def add_sound(file: UploadFile = File(...), name: str = "custom"):
     try:
         clean_name = "".join(x for x in name if x.isalnum() or x in "._- ")
         file_name = f"{clean_name}.ogg"
+
         file_path = os.path.join(BASE_DIR, file_name)
+
 
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)

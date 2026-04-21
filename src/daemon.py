@@ -136,13 +136,13 @@ def infer_single_file(
 
 class AudioDaemon:
     def __init__(
-        self,
-        model: AudioModel,
-        cfg: DaemonConfig,
-        callback: Callable[[dict], None],
+            self,
+            model: AudioModel,
+            cfg: DaemonConfig,
+            callback: Callable[[dict], None],
     ):
-        self.model    = model
-        self.cfg      = cfg
+        self.model = model
+        self.cfg = cfg
         self.callback = callback
         self.labels   = model.get_audioset_labels()
         self.smooth_buffer = deque(maxlen=5)
