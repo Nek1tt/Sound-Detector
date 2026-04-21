@@ -26,6 +26,14 @@ from src.config import DaemonConfig, ModelConfig, PathsConfig, InferenceConfig
 from src.model import AudioModel, get_device, load_audio
 
 
+from numpy.linalg import norm
+
+def cosine_similarity(v1: np.ndarray, v2: np.ndarray) -> float:
+    """Вычисляет косинусное сходство двух векторов (от -1.0 до 1.0)"""
+    if norm(v1) == 0 or norm(v2) == 0:
+        return 0.0
+    return float(np.dot(v1, v2) / (norm(v1) * norm(v2)))
+
 # ── Режим 1: одиночный инференс ───────────────────────────────────────────
 
 def infer_single_file(
@@ -100,19 +108,34 @@ class AudioDaemon:
     """
 
     def __init__(
-        self,
-        model: AudioModel,
-        cfg: DaemonConfig,
-        callback: Callable[[dict], None],
+            self,
+            model: AudioModel,
+            cfg: DaemonConfig,
+            callback: Callable[[dict], None],
     ):
-        self.model    = model
-        self.cfg      = cfg
+        self.model = model
+        self.cfg = cfg
         self.callback = callback
-        self.labels   = model.get_audioset_labels()
+        self.labels = model.get_audioset_labels()
 
-        self._queue      : queue.Queue = queue.Queue(maxsize=10)
-        self._stop_event : threading.Event = threading.Event()
-        self._threads    : list = []
+        self._queue: queue.Queue = queue.Queue(maxsize=10)
+        self._stop_event: threading.Event = threading.Event()
+        self._threads: list = []
+
+        # --- НОВОЕ: Хранилище кастомных звуков ---
+        self.custom_embeddings = {}  # Формат: {"название_звука": np.ndarray}
+        self.custom_threshold = 0.85  # Порог косинусного сходства (подберите опытным путем)
+
+    def load_custom_sound(self, name: str, filepath: str):
+        """Загружает файл, прогоняет через модель и сохраняет его эмбеддинг как эталон."""
+        print(f"[daemon] Извлечение эталонного эмбеддинга для: {name}")
+        try:
+            waveform = load_audio(filepath, sr=self.model.cfg.sample_rate)
+            _, features = self.model.infer_waveform(waveform)
+            self.custom_embeddings[name] = features
+            print(f"[daemon] ✅ Кастомный звук '{name}' успешно загружен.")
+        except Exception as e:
+            print(f"[daemon] ❌ Ошибка загрузки кастомного звука {name}: {e}")
 
     # ── Запуск ──────────────────────────────────────────────────────────
 
@@ -257,19 +280,36 @@ class AudioDaemon:
             probs, features = self.model.infer_waveform(chunk)
             elapsed_ms = (time.time() - t0) * 1000
 
+            # --- НОВОЕ: Проверка кастомных звуков ---
+            best_custom_name = None
+            best_custom_sim = 0.0
+
+            for custom_name, ref_emb in self.custom_embeddings.items():
+                sim = cosine_similarity(features, ref_emb)
+                if sim > best_custom_sim:
+                    best_custom_sim = sim
+                    best_custom_name = custom_name
+
+            # Базовые предсказания AudioSet
             top_idx = np.argsort(probs)[::-1][:10]
             top_predictions = [(self.labels[i], float(probs[i])) for i in top_idx]
+
+            # Перехват кастомным звуком
+            if best_custom_name and best_custom_sim >= self.custom_threshold:
+                # Вставляем кастомный звук на 1 место, вероятность = косинусное сходство
+                top_predictions.insert(0, (best_custom_name, best_custom_sim))
+
             above_threshold = [
                 (lbl, p) for lbl, p in top_predictions
                 if p >= self.cfg.confidence_threshold
             ]
 
             self.callback({
-                "timestamp":       time.time(),
+                "timestamp": time.time(),
                 "top_predictions": top_predictions,
                 "above_threshold": above_threshold,
-                "features":        features,
-                "elapsed_ms":      elapsed_ms,
+                "features": features,
+                "elapsed_ms": elapsed_ms,
             })
 
 

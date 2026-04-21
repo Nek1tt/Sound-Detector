@@ -23,8 +23,8 @@ class SoundStates(StatesGroup):
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
-
-bot = Bot(token="BOT_TOKEN", default=DefaultBotProperties(parse_mode="Markdown"))
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="Markdown"))
 dp = Dispatcher()
 
 API_URL = os.getenv("API_BASE_URL")
@@ -117,7 +117,15 @@ async def process_sound(message: types.Message, state: FSMContext):
             res = await client.post(f"{API_URL}/add_sound?name={sound_name}", files=files, headers=HEADERS)
             await status_msg.delete()
             if res.status_code == 200:
-                await message.answer(f"✅ Звук **{sound_name}** успешно добавлен!", reply_markup=get_main_menu())
+                # --- НОВОЕ: Добавляем звук в список фильтров ---
+                clean_name = "".join(x for x in sound_name if x.isalnum() or x in "._- ")
+                if clean_name not in AVAILABLE_SOUNDS:
+                    AVAILABLE_SOUNDS.append(clean_name)
+                # -----------------------------------------------
+
+                await message.answer(
+                    f"✅ Звук **{clean_name}** успешно добавлен! Теперь его можно выбрать в настройках мониторинга.",
+                    reply_markup=get_main_menu())
             else:
                 await message.answer(f"❌ Ошибка сервера: {res.status_code}", reply_markup=get_main_menu())
         except Exception as e:

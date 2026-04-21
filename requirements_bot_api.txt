@@ -31,3 +31,4 @@ typing_extensions==4.15.0
 urllib3==2.6.3
 uvicorn==0.44.0
 yarl==1.23.0
+soundfile=0.13.1
