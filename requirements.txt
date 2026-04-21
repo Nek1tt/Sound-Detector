@@ -39,3 +39,7 @@ tqdm==4.67.3
 # ── Микрофон (опционально, для daemon --mode mic) ─────────────────────────
 # На Pi нужен предварительно: sudo apt install -y portaudio19-dev
 # sounddevice==0.4.7
+onnxruntime
+onnx
+tensorflow
+onnx2tf
