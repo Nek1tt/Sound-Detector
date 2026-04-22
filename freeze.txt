@@ -21,7 +21,6 @@ decorator==5.2.1
 faiss-cpu==1.13.2
 fastapi==0.136.0
 filelock==3.29.0
-flatbuffers==20181003210633
 fonttools==4.62.1
 frozenlist==1.8.0
 fsspec==2026.3.0
@@ -93,9 +92,9 @@ sympy==1.14.0
 tensorflow==2.21.0
 termcolor==3.3.0
 threadpoolctl==3.6.0
-torch==2.11.0+cpu
-torchaudio==2.11.0+cpu
-torchvision==0.26.0+cpu
+torch==2.11.0
+torchaudio==2.11.0
+torchvision==0.26.0
 tqdm==4.67.3
 typing-inspection==0.4.2
 typing_extensions==4.15.0
